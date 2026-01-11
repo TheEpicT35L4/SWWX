@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Weather & Space Monitor - Dark Theme</title>
+    
+    <!-- Leaflet CSS + JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Mapbox GL JS for better dark basemap -->
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.css" rel="stylesheet" />
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.0.0/mapbox-gl.js"></script>
+    
+    <!-- ToGeoJSON for converting NHC KML to GeoJSON -->
+    <script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@0.16.0"></script>
+    
+    <style>
+        body, html {
+            height: 100%; margin: 0; padding: 0;
+            background: #0d1117; color: #e6edf3;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+        #container { display: flex; flex-direction: column; height: 100%; }
+        #main { flex: 1; display: flex; }
+        #sidebar {
+            width: 320px; background: #161b22; padding: 12px;
+            overflow-y: auto; border-right: 1px solid #30363d;
+        }
+        #map { flex: 1; }
+        #solar-bar {
+            height: 180px; background: #0d1117; border-top: 1px solid #30363d;
+            overflow-x: auto; white-space: nowrap; padding: 10px;
+            display: flex; align-items: center; gap: 12px;
+        }
+        .alert-item {
+            padding: 10px; margin-bottom: 10px; border-radius: 6px;
+            background: #21262d; font-size: 0.9em;
+        }
+        .advisory  { background: #1e40af; } /* blue */
+        .watch     { background: #854d0e; color: #fef08a; } /* yellow */
+        .warning   { background: #7f1d1d; } /* red */
+        .pds       { background: #5b21b6; } /* purple */
+        .title     { font-size: 1.3em; margin: 0 0 15px 0; text-align: center; }
+        img.sdo-img {
+            height: 140px; border-radius: 4px; box-shadow: 0 0 8px rgba(0,0,0,0.6);
+        }
+        #play-btn {
+            position: absolute; bottom: 195px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; padding: 8px 16px; background: #238636; color: white;
+            border: none; border-radius: 6px; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="main">
+            <div id="sidebar">
+                <h2 class="title">NWS Active Alerts (US)</h2>
+                <div id="alerts-list">Loading alerts...</div>
+            </div>
+            <div id="map"></div>
+        </div>
+        
+        <div id="solar-bar">
+            <h3 style="margin: 0 20px 0 10px; white-space: nowrap;">Latest SDO Solar Imagery</h3>
+            <!-- Images will be injected here -->
+        </div>
+    </div>
+
+    <button id="play-btn">Play Animation</button>
+
+    <script>
+        // ================= MAP SETUP =================
+        // Your provided Mapbox token
+        mapboxgl.accessToken = 'pk.eyJ1IjoidG90YWxseXQiLCJhIjoiY21rOWNuY3c3MW1taDNnb2p0NG5vMnp3NiJ9.XiPPcGPMiWjzm39gu2RQmw';
+        
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/dark-v11',
+            center: [-95, 38], // Center on US
+            zoom: 4
+        });
+
+        map.addControl(new mapboxgl.NavigationControl());
+
+        // ================= NWS ALERTS (LEFT SIDEBAR) =================
+        async function loadAlerts() {
+            try {
+                const res = await fetch('https://api.weather.gov/alerts/active?area=US&status=actual');
+                const data = await res.json();
+                const list = document.getElementById('alerts-list');
+                list.innerHTML = '';
+
+                if (!data.features?.length) {
+                    list.innerHTML = '<p>No active alerts at this time.</p>';
+                    return;
+                }
+
+                data.features.forEach(f => {
+                    const p = f.properties;
+                    const severity = (p.severity || '').toLowerCase();
+                    let className = 'alert-item ';
+                    if (severity.includes('advisory')) className += 'advisory';
+                    else if (severity.includes('watch')) className += 'watch';
+                    else if (severity.includes('warning')) className += 'warning';
+                    else className += 'pds'; // fallback for PDS/extreme
+
+                    const div = document.createElement('div');
+                    div.className = className;
+                    div.innerHTML = `
+                        <strong>${p.event || 'Alert'}</strong><br>
+                        <small>${p.areaDesc || 'Various areas'}</small><br>
+                        <small>${p.headline || p.description.substring(0,80)+'...'}</small>
+                    `;
+                    list.appendChild(div);
+                });
+            } catch (e) {
+                document.getElementById('alerts-list').innerHTML = '<p>Error loading alerts.</p>';
+            }
+        }
+
+        // ================= USGS EARTHQUAKES =================
+        async function loadQuakes() {
+            try {
+                const res = await fetch('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson');
+                const data = await res.json();
+
+                data.features.forEach(f => {
+                    const mag = f.properties.mag;
+                    if (!mag) return;
+                    
+                    let color = 'gray';
+                    if (mag >= 7.7) color = 'pink';
+                    else if (mag >= 6.7) color = 'red';
+                    else if (mag >= 6.0) color = 'orange';
+                    else if (mag >= 5.0) color = 'yellow';
+                    else if (mag >= 3.5) color = 'green';
+
+                    const coords = f.geometry.coordinates;
+                    new mapboxgl.Marker({
+                        color: color,
+                        scale: Math.max(0.6, mag / 5)
+                    })
+                    .setLngLat([coords[0], coords[1]])
+                    .setPopup(new mapboxgl.Popup().setHTML(`
+                        <strong>M${mag.toFixed(1)}</strong><br>
+                        ${f.properties.place || 'Unknown'}<br>
+                        ${new Date(f.properties.time).toLocaleString()}
+                    `))
+                    .addTo(map);
+                });
+            } catch (e) { console.error('Quake load error', e); }
+        }
+
+        // ================= NHC CONES / TRACKS =================
+        async function loadNHC() {
+            try {
+                const kmlRes = await fetch('https://www.nhc.noaa.gov/gis/kml/nhc_active.kml');
+                const kmlText = await kmlRes.text();
+                const dom = new DOMParser().parseFromString(kmlText, 'text/xml');
+                const geojson = toGeoJSON.kml(dom);
+
+                if (geojson.features.length === 0) {
+                    console.log('No active NHC systems (normal for off-season)');
+                    return;
+                }
+
+                // Add as GeoJSON layer (cones are usually polygons)
+                L.geoJSON(geojson, {
+                    style: feature => {
+                        if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
+                            return { color: '#ff6b6b', weight: 2, opacity: 0.7, fillOpacity: 0.15 };
+                        }
+                        return { color: '#ffcc00', weight: 4 };
+                    },
+                    onEachFeature: (feature, layer) => {
+                        if (feature.properties.description) {
+                            layer.bindPopup(feature.properties.description);
+                        }
+                    }
+                }).addTo(map);
+            } catch (e) { console.error('NHC load error', e); }
+        }
+
+        // ================= SDO SOLAR IMAGES (BOTTOM) =================
+        const wavelengths = ['0193', '0211', '0171', '0304', 'HMII', '1600', '1700', '4500'];
+        const solarContainer = document.getElementById('solar-bar');
+        let images = [];
+
+        wavelengths.forEach(wl => {
+            const url = `https://sdo.gsfc.nasa.gov/assets/img/latest/latest_512_${wl}.jpg`;
+            const img = document.createElement('img');
+            img.src = url;
+            img.className = 'sdo-img';
+            img.alt = `SDO ${wl}Å`;
+            img.onerror = () => { img.src = 'https://via.placeholder.com/512x512?text=SDO+Unavailable'; };
+            solarContainer.appendChild(img);
+            images.push(img);
+        });
+
+        // Simple play animation (cycle through images)
+        const playBtn = document.getElementById('play-btn');
+        let interval = null;
+        playBtn.onclick = () => {
+            if (interval) {
+                clearInterval(interval);
+                interval = null;
+                playBtn.textContent = 'Play Animation';
+            } else {
+                let idx = 0;
+                interval = setInterval(() => {
+                    images.forEach(img => img.style.opacity = '0.4');
+                    images[idx].style.opacity = '1';
+                    idx = (idx + 1) % images.length;
+                }, 800);
+                playBtn.textContent = 'Pause';
+            }
+        };
+
+        // Load everything on start
+        loadAlerts();
+        loadQuakes();
+        loadNHC();
+
+        // Auto-refresh key data (alerts every 5 min, quakes every 10 min)
+        setInterval(loadAlerts, 300000);
+        setInterval(loadQuakes, 600000);
+        // NHC can be refreshed more frequently during season if desired
+        // setInterval(loadNHC, 600000);
+    </script>
+</body>
+</html>
